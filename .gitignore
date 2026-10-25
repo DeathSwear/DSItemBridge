@@ -1,0 +1,16 @@
+# Build files
+target/classes/
+target/javac_args.txt
+*.class
+
+# IDE & Editor files
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS files
+.DS_Store
+Thumbs.db
