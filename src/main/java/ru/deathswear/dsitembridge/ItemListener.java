@@ -12,9 +12,15 @@ import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.inventory.InventoryType;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.inventory.CraftingInventory;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataType;
 
 import java.util.List;
 
@@ -23,11 +29,13 @@ public class ItemListener implements Listener {
     private final DSItemBridge plugin;
     private final ConfigManager configManager;
     private final boolean hasMythicMobs;
+    private final NamespacedKey mythicTypeKey;
 
     public ItemListener(DSItemBridge plugin, ConfigManager configManager) {
         this.plugin = plugin;
         this.configManager = configManager;
         this.hasMythicMobs = Bukkit.getPluginManager().isPluginEnabled("MythicMobs");
+        this.mythicTypeKey = new NamespacedKey("mythicmobs", "type");
     }
 
     /**
@@ -40,14 +48,26 @@ public class ItemListener implements Listener {
 
         if (hasMythicMobs) {
             try {
-                if (MythicBukkit.inst().getItemManager().isMythicItem(item)) {
-                    String mType = MythicBukkit.inst().getItemManager().getMythicTypeFromItem(item);
-                    if (mType != null && !mType.isEmpty()) {
-                        return mType;
+                // 1. MythicBukkit API lookup
+                String mType = MythicBukkit.inst().getItemManager().getMythicTypeFromItem(item);
+                if (mType != null && !mType.isEmpty()) {
+                    return mType;
+                }
+            } catch (Throwable ignored) {
+            }
+
+            try {
+                // 2. Direct PersistentDataContainer check for "mythicmobs:type"
+                if (item.hasItemMeta()) {
+                    ItemMeta meta = item.getItemMeta();
+                    if (meta != null && meta.getPersistentDataContainer().has(mythicTypeKey, PersistentDataType.STRING)) {
+                        String type = meta.getPersistentDataContainer().get(mythicTypeKey, PersistentDataType.STRING);
+                        if (type != null && !type.isEmpty()) {
+                            return type;
+                        }
                     }
                 }
-            } catch (Throwable t) {
-                // If MythicBukkit is reloading or unavailable
+            } catch (Throwable ignored) {
             }
         }
 
@@ -69,9 +89,33 @@ public class ItemListener implements Listener {
     }
 
     /**
+     * Handles crafting of an item: grants craft advancements and processes acquisition.
+     */
+    public void handleCraft(Player player, String id, ItemStack craftedItem) {
+        if (player == null || id == null) return;
+
+        if (configManager.isDebug()) {
+            plugin.getLogger().info("[DEBUG] Craft detected for " + player.getName() + ": " + id);
+        }
+
+        // 1. Grant Craft Advancements
+        List<String> craftAdvs = configManager.getCraftAdvancements(id);
+        if (craftAdvs != null && !craftAdvs.isEmpty()) {
+            for (String adv : craftAdvs) {
+                grantAdvancement(player, adv);
+            }
+        }
+
+        // 2. Process Acquisition (recipe unlocks & acquire achievements)
+        processItemAcquisition(player, craftedItem);
+    }
+
+    /**
      * Processes any item entering or being touched by the player's inventory.
      */
     public void processItemAcquisition(Player player, ItemStack item) {
+        if (player == null || item == null || item.getType() == Material.AIR) return;
+
         String id = getMythicOrVanillaId(item);
         if (id == null) return;
 
@@ -105,10 +149,70 @@ public class ItemListener implements Listener {
     }
 
     /**
-     * CRAFT ITEM EVENT: Player crafts an item.
+     * Scans the player's entire inventory (hotbar, main, armor, offhand, cursor)
+     * and processes all items for recipe discoveries and acquire advancements.
      */
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onCraftItem(CraftItemEvent event) {
+    public void scanPlayerInventory(Player player) {
+        if (player == null || !player.isOnline()) return;
+
+        for (ItemStack item : player.getInventory().getContents()) {
+            if (item != null && item.getType() != Material.AIR) {
+                processItemAcquisition(player, item);
+            }
+        }
+
+        ItemStack cursor = player.getItemOnCursor();
+        if (cursor != null && cursor.getType() != Material.AIR) {
+            processItemAcquisition(player, cursor);
+        }
+    }
+
+    // ==========================================
+    // CRAFT DETECTION (Multi-layer)
+    // ==========================================
+
+    /**
+     * Layer 1: InventoryClickEvent on RESULT slot.
+     * Priority LOW executes before Crucible cancels the event.
+     */
+    @EventHandler(priority = EventPriority.LOW)
+    public void onCraftSlotClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+
+        boolean isResult = false;
+        if (event.getSlotType() == InventoryType.SlotType.RESULT) {
+            isResult = true;
+        } else if (event.getRawSlot() == 0) {
+            Inventory top = event.getView().getTopInventory();
+            if (top instanceof CraftingInventory || top.getType() == InventoryType.WORKBENCH || top.getType() == InventoryType.CRAFTING) {
+                isResult = true;
+            }
+        }
+
+        if (!isResult) return;
+
+        ItemStack result = event.getCurrentItem();
+        if (result == null || result.getType() == Material.AIR) {
+            if (event.getInventory() instanceof CraftingInventory ci) {
+                result = ci.getResult();
+            }
+        }
+        if (result == null || result.getType() == Material.AIR) return;
+
+        String id = getMythicOrVanillaId(result);
+        if (id != null) {
+            handleCraft(player, id, result);
+        }
+
+        // Guaranteed next-tick scan for Shift-click multi-crafts
+        Bukkit.getScheduler().runTask(plugin, () -> scanPlayerInventory(player));
+    }
+
+    /**
+     * Layer 2: Vanilla CraftItemEvent fallback.
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onVanillaCraft(CraftItemEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
 
         ItemStack result = event.getCurrentItem();
@@ -120,106 +224,92 @@ public class ItemListener implements Listener {
         if (result == null || result.getType() == Material.AIR) return;
 
         String id = getMythicOrVanillaId(result);
-        if (id == null) return;
-
-        if (configManager.isDebug()) {
-            plugin.getLogger().info("[DEBUG] " + player.getName() + " crafted " + id);
+        if (id != null) {
+            handleCraft(player, id, result);
         }
 
-        // 1. Grant Craft Advancements
-        List<String> craftAdvs = configManager.getCraftAdvancements(id);
-        if (craftAdvs != null && !craftAdvs.isEmpty()) {
-            for (String adv : craftAdvs) {
-                grantAdvancement(player, adv);
-            }
-        }
-
-        // 2. Check if crafting this item also unlocks any recipes or acquire achievements
-        processItemAcquisition(player, result);
+        Bukkit.getScheduler().runTask(plugin, () -> scanPlayerInventory(player));
     }
 
+    // ==========================================
+    // ITEM ACQUISITION (Chests, LootContainers, Drag, Pickup)
+    // ==========================================
+
     /**
-     * INVENTORY CLICK EVENT: Handles container looting (LootContainers, chests, etc.)
+     * Catches all inventory clicks (taking from chest, shift-click, number keys, moving items).
      */
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onInventoryClick(InventoryClickEvent event) {
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onGeneralInventoryClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
 
-        Inventory clickedInv = event.getClickedInventory();
-        if (clickedInv == null) return;
+        // Skip slot 0 crafting result here to avoid duplicate handling
+        if (event.getSlotType() == InventoryType.SlotType.RESULT) return;
 
-        Inventory topInv = event.getView().getTopInventory();
-        Inventory bottomInv = event.getView().getBottomInventory();
-
-        // Check if interaction involves an external container (top inventory is not player's inventory)
-        boolean isExternalContainer = topInv != null && !topInv.equals(bottomInv) && !topInv.equals(player.getInventory());
-
-        if (!isExternalContainer) {
-            return;
+        // 1. Immediate check on clicked item
+        ItemStack current = event.getCurrentItem();
+        if (current != null && current.getType() != Material.AIR) {
+            processItemAcquisition(player, current);
         }
 
-        // Case A: Shift-click from external container into player inventory
-        if (event.isShiftClick() && clickedInv.equals(topInv)) {
-            ItemStack item = event.getCurrentItem();
-            if (item != null && item.getType() != Material.AIR) {
-                processItemAcquisition(player, item);
-            }
-            return;
+        // 2. Immediate check on cursor item
+        ItemStack cursor = event.getCursor();
+        if (cursor != null && cursor.getType() != Material.AIR) {
+            processItemAcquisition(player, cursor);
         }
 
-        // Case B: Number key swap from external container into hotbar
-        if (event.getClick() == ClickType.NUMBER_KEY && clickedInv.equals(topInv)) {
-            ItemStack item = event.getCurrentItem();
-            if (item != null && item.getType() != Material.AIR) {
-                processItemAcquisition(player, item);
+        // 3. Hotbar button swap check
+        if (event.getClick() == ClickType.NUMBER_KEY && event.getHotbarButton() >= 0) {
+            ItemStack hotbarItem = player.getInventory().getItem(event.getHotbarButton());
+            if (hotbarItem != null && hotbarItem.getType() != Material.AIR) {
+                processItemAcquisition(player, hotbarItem);
             }
-            return;
         }
 
-        // Case C: Picking up item with cursor from external container
-        if (clickedInv.equals(topInv)) {
-            ItemStack item = event.getCurrentItem();
-            if (item != null && item.getType() != Material.AIR) {
-                processItemAcquisition(player, item);
-            }
+        // 4. Guaranteed next-tick scan of player's inventory once click changes are committed
+        Bukkit.getScheduler().runTask(plugin, () -> scanPlayerInventory(player));
+    }
+
+    /**
+     * Catches closing any container (chests, LootContainers, barrels, workbenches).
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onInventoryClose(InventoryCloseEvent event) {
+        if (event.getPlayer() instanceof Player player) {
+            scanPlayerInventory(player);
         }
     }
 
     /**
-     * ENTITY PICKUP ITEM EVENT: Player picks up an item from the floor.
+     * Catches picking up items from the floor.
      */
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    @EventHandler(priority = EventPriority.MONITOR)
     public void onPickupItem(EntityPickupItemEvent event) {
         if (event.getEntity() instanceof Player player) {
             ItemStack item = event.getItem().getItemStack();
             processItemAcquisition(player, item);
+            Bukkit.getScheduler().runTask(plugin, () -> scanPlayerInventory(player));
         }
     }
 
     /**
-     * INVENTORY DRAG EVENT: Player drags items from external container into inventory.
+     * Catches dragging items across slots.
      */
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    @EventHandler(priority = EventPriority.MONITOR)
     public void onInventoryDrag(InventoryDragEvent event) {
-        if (!(event.getWhoClicked() instanceof Player player)) return;
-
-        Inventory topInv = event.getView().getTopInventory();
-        if (topInv == null || topInv.equals(player.getInventory())) return;
-
-        int topSize = topInv.getSize();
-        boolean touchedPlayerInventory = false;
-        for (int rawSlot : event.getRawSlots()) {
-            if (rawSlot >= topSize) {
-                touchedPlayerInventory = true;
-                break;
-            }
-        }
-
-        if (touchedPlayerInventory) {
+        if (event.getWhoClicked() instanceof Player player) {
             ItemStack item = event.getOldCursor();
             if (item != null && item.getType() != Material.AIR) {
                 processItemAcquisition(player, item);
             }
+            Bukkit.getScheduler().runTask(plugin, () -> scanPlayerInventory(player));
         }
+    }
+
+    /**
+     * Scan inventory on join.
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        Bukkit.getScheduler().runTaskLater(plugin, () -> scanPlayerInventory(event.getPlayer()), 20L);
     }
 }

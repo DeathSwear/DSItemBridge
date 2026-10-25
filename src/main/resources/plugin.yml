@@ -1,10 +1,10 @@
 name: DSItemBridge
-version: 1.0.0
+version: 1.0.1
 main: ru.deathswear.dsitembridge.DSItemBridge
 api-version: 1.21
 author: DeathSwear
 description: Bridge between item acquisition (looting/crafting), recipe unlocking, and PremiumAdvancements
-softdepend: [MythicMobs, PremiumAdvancements]
+softdepend: [MythicMobs, MythicCrucible, PremiumAdvancements]
 
 commands:
   dsbridge:

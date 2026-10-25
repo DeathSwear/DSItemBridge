@@ -27,6 +27,11 @@ public class DSItemBridge extends JavaPlugin implements CommandExecutor, TabComp
         this.itemListener = new ItemListener(this, configManager);
         getServer().getPluginManager().registerEvents(itemListener, this);
 
+        if (getServer().getPluginManager().isPluginEnabled("MythicCrucible")) {
+            getServer().getPluginManager().registerEvents(new CrucibleCraftListener(this, itemListener), this);
+            getLogger().info("MythicCrucible integration enabled for custom craft events.");
+        }
+
         if (getCommand("dsbridge") != null) {
             getCommand("dsbridge").setExecutor(this);
             getCommand("dsbridge").setTabCompleter(this);

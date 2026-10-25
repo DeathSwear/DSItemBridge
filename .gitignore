@@ -1,6 +1,5 @@
 # Build files
-target/classes/
-target/javac_args.txt
+target/
 *.class
 
 # IDE & Editor files

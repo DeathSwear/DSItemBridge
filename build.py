@@ -8,13 +8,14 @@ SRC_RES = os.path.join(PROJECT_DIR, r"src\main\resources")
 TARGET_DIR = os.path.join(PROJECT_DIR, "target")
 CLASSES_DIR = os.path.join(TARGET_DIR, "classes")
 OUT_JAR = os.path.join(TARGET_DIR, "DSItemBridge.jar")
-SERVER_PLUGINS = r"D:\projects\minecraft\testVersionUp\ds_rpg\plugins"
+OUT_JAR_VER = os.path.join(TARGET_DIR, "DSItemBridge-1.0.1.jar")
 
 LIBS_DIR = r"D:\projects\minecraft\testVersionUp\ds_rpg\libraries"
 MYTHIC_JAR = r"D:\projects\minecraft\testVersionUp\ds_rpg\plugins\MythicMobsPremium-5.13.1-SNAPSHOT.jar"
+CRUCIBLE_JAR = r"D:\projects\minecraft\testVersionUp\ds_rpg\plugins\MythicCrucible-5.13.0.jar"
 
 def build():
-    print("=== Building DSItemBridge ===")
+    print("=== Building DSItemBridge v1.0.1 ===")
     
     # 1. Clean and create target directories
     if os.path.exists(CLASSES_DIR):
@@ -33,7 +34,7 @@ def build():
         print(f"  {os.path.basename(jf)}")
         
     # 3. Gather all libraries from server libraries dir
-    lib_jars = [MYTHIC_JAR.replace("\\", "/")]
+    lib_jars = [MYTHIC_JAR.replace("\\", "/"), CRUCIBLE_JAR.replace("\\", "/")]
     for root, dirs, files in os.walk(LIBS_DIR):
         for f in files:
             if f.endswith(".jar"):
@@ -74,29 +75,27 @@ def build():
             shutil.copy2(src_f, dst_f)
             print(f"Copied resource: {rel}")
             
-    # 6. Package JAR
-    print(f"\nCreating JAR: {OUT_JAR}")
-    jar_cmd = [
-        "jar",
-        "--create",
-        "--file", OUT_JAR,
-        "-C", CLASSES_DIR,
-        "."
-    ]
-    res_jar = subprocess.run(jar_cmd, capture_output=True, text=True)
-    if res_jar.returncode != 0:
-        print("JAR packaging failed:")
-        print(res_jar.stderr)
-        return False
-        
-    jar_size = os.path.getsize(OUT_JAR)
-    print(f"JAR built successfully: {OUT_JAR} ({jar_size} bytes)")
+    # 6. Package JARs
+    for jar_path in [OUT_JAR, OUT_JAR_VER]:
+        print(f"\nCreating JAR: {jar_path}")
+        jar_cmd = [
+            "jar",
+            "--create",
+            "--file", jar_path,
+            "-C", CLASSES_DIR,
+            "."
+        ]
+        res_jar = subprocess.run(jar_cmd, capture_output=True, text=True)
+        if res_jar.returncode != 0:
+            print("JAR packaging failed:")
+            print(res_jar.stderr)
+            return False
+            
+        jar_size = os.path.getsize(jar_path)
+        print(f"JAR built successfully: {jar_path} ({jar_size} bytes)")
     
-    # 7. Copy to plugins folder
-    dest_plugin = os.path.join(SERVER_PLUGINS, "DSItemBridge.jar")
-    shutil.copy2(OUT_JAR, dest_plugin)
-    print(f"Installed plugin to: {dest_plugin}")
-    
+    print("\n[SUCCESS] Build finished!")
+    print(f"Ready JAR: {OUT_JAR_VER}")
     return True
 
 if __name__ == "__main__":
